@@ -45,11 +45,14 @@ UNITTEST_START
 UNITTEST_START
 {
   char outname[256];
-  CURL *curl = curl_easy_init();
+  CURL *curl;
   CURLcode result;
   struct altsvcinfo *asi = Curl_altsvc_init(arg);
   if(!asi)
     return 1;
+  curl = curl_easy_init();
+  if(!curl)
+    goto fail;
   fail_unless(asi->num == 4, "wrong number of entries");
   msnprintf(outname, sizeof(outname), "%s-out", arg);
 
@@ -107,8 +110,9 @@ UNITTEST_START
 
   Curl_altsvc_save(asi, outname);
 
-  Curl_altsvc_cleanup(asi);
   curl_easy_cleanup(curl);
+  fail:
+  Curl_altsvc_cleanup(asi);
   return unitfail;
 }
 UNITTEST_STOP
