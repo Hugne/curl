@@ -168,6 +168,8 @@ enum smb_req_state {
   SMB_UPLOAD,
   SMB_CLOSE,
   SMB_TREE_DISCONNECT,
+  SMB_RPCBIND,
+  SMB_ENUMSHARES,
   SMB_DONE
 };
 
@@ -216,6 +218,8 @@ static void request_state(struct connectdata *conn,
     "SMB_UPLOAD",
     "SMB_CLOSE",
     "SMB_TREE_DISCONNECT",
+    "SMB_RPCBIND",
+    "SMB_ENUMSHARES",
     "SMB_DONE",
     /* LAST */
   };
@@ -504,19 +508,18 @@ static CURLcode smb_send_tree_connect(struct connectdata *conn)
                           sizeof(msg) - sizeof(msg.bytes) + byte_count);
 }
 
-static CURLcode smb_send_open(struct connectdata *conn)
+static CURLcode _smb_send_open(struct connectdata *conn, const char *path)
 {
-  struct smb_request *req = conn->data->req.protop;
   struct smb_nt_create msg;
   size_t byte_count;
 
-  if((strlen(req->path) + 1) > sizeof(msg.bytes))
+  if((strlen(path) + 1) > sizeof(msg.bytes))
     return CURLE_FILESIZE_EXCEEDED;
 
   memset(&msg, 0, sizeof(msg));
   msg.word_count = SMB_WC_NT_CREATE_ANDX;
   msg.andx.command = SMB_COM_NO_ANDX_COMMAND;
-  byte_count = strlen(req->path);
+  byte_count = strlen(path);
   msg.name_length = smb_swap16((unsigned short)byte_count);
   msg.share_access = smb_swap32(SMB_FILE_SHARE_ALL);
   if(conn->data->set.upload) {
@@ -528,10 +531,16 @@ static CURLcode smb_send_open(struct connectdata *conn)
     msg.create_disposition = smb_swap32(SMB_FILE_OPEN);
   }
   msg.byte_count = smb_swap16((unsigned short) ++byte_count);
-  strcpy(msg.bytes, req->path);
+  strcpy(msg.bytes, path);
 
   return smb_send_message(conn, SMB_COM_NT_CREATE_ANDX, &msg,
                           sizeof(msg) - sizeof(msg.bytes) + byte_count);
+}
+
+static CURLcode smb_send_open(struct connectdata *conn)
+{
+  struct smb_request *req = conn->data->req.protop;
+  return _smb_send_open(conn, req->path);
 }
 
 static CURLcode smb_send_close(struct connectdata *conn)
@@ -601,6 +610,11 @@ static CURLcode smb_send_write(struct connectdata *conn)
                      sizeof(*msg) - sizeof(msg->h) + (size_t) upload_size);
 
   return smb_send(conn, sizeof(*msg), (size_t) upload_size);
+}
+
+static CURLcode smb_send_rpcbind(struct connectdata *conn)
+{
+  return _smb_send_open(conn, "srvsvc");
 }
 
 static CURLcode smb_send_and_recv(struct connectdata *conn, void **msg)
@@ -779,7 +793,10 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
       break;
     }
     req->tid = smb_swap16(h->tid);
-    next_state = SMB_OPEN;
+    if (smbc->rpc)
+      next_state = SMB_RPCBIND;
+    else
+      next_state = SMB_OPEN;
     break;
 
   case SMB_OPEN:
@@ -791,7 +808,10 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
     smb_m = (const struct smb_nt_create_response*) msg;
     req->fid = smb_swap16(smb_m->fid);
     conn->data->req.offset = 0;
-    if(conn->data->set.upload) {
+    if (smbc->rpc) {
+      next_state = SMB_ENUMSHARES;
+    }
+    else if(conn->data->set.upload) {
       conn->data->req.size = conn->data->state.infilesize;
       Curl_pgrsSetUploadSize(conn->data, conn->data->req.size);
       next_state = SMB_UPLOAD;
@@ -869,6 +889,15 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
     next_state = SMB_DONE;
     break;
 
+  case SMB_RPCBIND:
+    next_state = SMB_ENUMSHARES;
+    break;
+  case SMB_ENUMSHARES:
+    /*TODO: we end up here when we receive the enumshares reply,
+    parse the data*/
+    next_state = SMB_DONE;
+    break;
+
   default:
     smb_pop_message(conn);
     return CURLE_OK; /* ignore */
@@ -897,6 +926,12 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
     result = smb_send_tree_disconnect(conn);
     break;
 
+  case SMB_RPCBIND:
+    result = smb_send_rpcbind(conn);
+    break;
+  case SMB_ENUMSHARES:
+    
+  break;
   case SMB_DONE:
     result = req->result;
     *done = true;
@@ -979,10 +1014,11 @@ static CURLcode smb_parse_url_path(struct connectdata *conn)
   if(!slash)
     slash = strchr(smbc->share, '\\');
 
-  /* The share must be present */
+  /* If no share was specified, this is an RPC call */
   if(!slash) {
-    Curl_safefree(smbc->share);
-    return CURLE_URL_MALFORMAT;
+    smbc->rpc = true;
+    strncat(smbc->share, "\IPC$", 5);
+    return CURLE_OK;
   }
 
   /* Parse the path for the file path converting any forward slashes into

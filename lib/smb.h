@@ -44,6 +44,7 @@ struct smb_conn {
   size_t send_size;
   size_t sent;
   size_t got;
+  bool rpc;
 };
 
 /*
