@@ -53,16 +53,19 @@ struct smb_conn {
 #ifdef BUILDING_CURL_SMB_C
 
 #if defined(_MSC_VER) || defined(__ILEC400__)
+#define PACKED(s)  __pragma(pack(push,1)) s __pragma(pack(pop)) 
 #  define PACK
 #  pragma pack(push)
 #  pragma pack(1)
 #elif defined(__GNUC__)
+#define PACKED(s) s __attribute__((packed))
 #  define PACK __attribute__((packed))
 #else
 #  define PACK
 #endif
 
 #define SMB_COM_CLOSE                 0x04
+#define SMB_COM_TRANSACTION           0x25
 #define SMB_COM_READ_ANDX             0x2e
 #define SMB_COM_WRITE_ANDX            0x2f
 #define SMB_COM_TREE_DISCONNECT       0x71
@@ -93,6 +96,10 @@ struct smb_conn {
 #define SMB_FILE_OVERWRITE_IF         0x05
 
 #define SMB_ERR_NOACCESS              0x00050001
+
+
+#define DISCONNECT_TID                0x0001
+#define NO_RESPONSE                   0x0002
 
 struct smb_header {
   unsigned char nbt_type;
@@ -238,6 +245,29 @@ struct smb_tree_disconnect {
   unsigned char word_count;
   unsigned short byte_count;
 } PACK;
+
+struct smb_transact {
+  unsigned char word_count;
+  unsigned short total_parameter_count;
+  unsigned short total_data_count;
+  unsigned short max_parameter_count;
+  unsigned short max_data_count;
+  unsigned char max_setup_count;
+  unsigned char reserved1;
+  unsigned short flags;
+  unsigned long timeout;
+  unsigned short reserved2;
+  unsigned short parameter_count;
+  unsigned short parameter_offset;
+  unsigned short data_count;
+  unsigned short data_offset;
+  unsigned char setup_count;
+  unsigned char reserved3;
+  unsigned short setup[];
+};
+//struct smb_transact_rsp {
+//
+//};
 
 #if defined(_MSC_VER) || defined(__ILEC400__)
 #  pragma pack(pop)

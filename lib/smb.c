@@ -617,6 +617,77 @@ static CURLcode smb_send_rpcbind(struct connectdata *conn)
   return _smb_send_open(conn, "srvsvc");
 }
 
+#define MEMALIGN_UP(addr, align) \
+    ((((uintptr_t)(addr)) + ((align) - 1)) & ~((align) - 1))
+
+
+//XXX This is oldstyle LANMAN protocol RAP netshareenum, 
+static CURLcode smb_transact_one(struct connectdata *conn, unsigned short op, const char *pdesc, const char *ddesc)
+{
+  union {
+    char pbuf[1024];
+    struct smb_transact t;
+  } req = {
+    .t.word_count = 0x0E, //FIXME
+    .t.total_parameter_count = 0x0000, //FIXME
+    .t.total_data_count = 0x0000,
+    .t.max_parameter_count = 0x0000,
+    .t.max_data_count = 0x1000, //TODO: defined max
+    .t.max_setup_count = 0x00,
+    .t.flags = DISCONNECT_TID,
+    .t.timeout = 0x0,
+    .t.parameter_count = 0x00, //FIXME
+    .t.parameter_offset = 0x0, //FIXME
+    .t.data_count = 0x0,
+    .t.data_offset = 0x0
+  };
+  PACKED(struct {
+    unsigned short bytecount;
+    unsigned char pipename[];
+  }) *smb_pipe_protocol = req.t.setup;
+
+  PACKED(
+  struct{
+    unsigned short opcode;
+    unsigned char paramdesc[6];
+    unsigned char datadesc[7];
+    unsigned short infolevel;
+    unsigned short recvbufsize;
+  })  *rap_req1 = NULL;
+
+#define LANMAN "\\PIPE\\LANMAN"
+  sprintf(smb_pipe_protocol->pipename, LANMAN);
+  smb_pipe_protocol->bytecount = sizeof(LANMAN);
+  /*Align the RAP request to 4b boundary*/
+  rap_req1 = MEMALIGN_UP(smb_pipe_protocol->pipename + smb_pipe_protocol->bytecount, 4);
+#define MS_RAP_NETSHAREENUM 0x0000
+  rap_req1->opcode = MS_RAP_NETSHAREENUM;
+  sprintf(rap_req1->paramdesc, "WrLeh");
+  sprintf(rap_req1->datadesc, "B13BWz");
+  rap_req1->infolevel = 1;
+  rap_req1->recvbufsize = 0x1000;
+
+  req.t.max_parameter_count = sizeof(*rap_req1);// 0x8;
+  req.t.total_parameter_count = sizeof(*rap_req1);
+  req.t.parameter_count = sizeof(*rap_req1);
+  req.t.parameter_offset = (char*)rap_req1 - (char*)&req +sizeof(struct smb_header) - 4;
+  smb_pipe_protocol->bytecount = (char*)(rap_req1 + 1) - (char*)&req;
+
+  return smb_send_message(conn, SMB_COM_TRANSACTION, &req, smb_pipe_protocol->bytecount);
+
+}
+
+
+static CURLcode smb_send_enumshares(struct connectdata *conn) {
+  return smb_transact_one(conn, 0x00, "WrLeh", "B13BWz");
+}
+
+static CURLcode smb_recv_enumshares(void *msg, size_t len) {
+  struct smb_header *h = msg;
+  struct smb_transact *t = h + 1;
+
+}
+
 static CURLcode smb_send_and_recv(struct connectdata *conn, void **msg)
 {
   struct smb_conn *smbc = &conn->proto.smbc;
@@ -895,6 +966,7 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
   case SMB_ENUMSHARES:
     /*TODO: we end up here when we receive the enumshares reply,
     parse the data*/
+    smb_recv_enumshares(msg, smbc->got);
     next_state = SMB_DONE;
     break;
 
@@ -930,7 +1002,7 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
     result = smb_send_rpcbind(conn);
     break;
   case SMB_ENUMSHARES:
-    
+    result = smb_send_enumshares(conn);
   break;
   case SMB_DONE:
     result = req->result;
