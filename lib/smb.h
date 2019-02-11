@@ -52,6 +52,11 @@ struct smb_conn {
  */
 #ifdef BUILDING_CURL_SMB_C
 
+#define MEMALIGN_UP(addr, align) \
+    ((((uintptr_t)(addr)) + ((align) - 1)) & ~((align) - 1))
+
+#define MS_PIPE_LANMAN "\\PIPE\\LANMAN"
+
 #if defined(_MSC_VER) || defined(__ILEC400__)
 #define PACKED(s)  __pragma(pack(push,1)) s __pragma(pack(pop)) 
 #  define PACK
@@ -265,9 +270,21 @@ struct smb_transact {
   unsigned char reserved3;
   unsigned short setup[];
 };
-//struct smb_transact_rsp {
-//
-//};
+struct smb_transact_rsp {
+  unsigned char word_count;
+  unsigned short total_parameter_count;
+  unsigned short total_data_count;
+  unsigned short reserved1;
+  unsigned short parameter_count;
+  unsigned short parameter_offset;
+  unsigned short parameter_displacement;
+  unsigned short data_count;
+  unsigned short data_offset;
+  unsigned short data_displacement;
+  unsigned char setup_count;
+  unsigned char reserved2;
+  unsigned short setup[];
+};
 
 #if defined(_MSC_VER) || defined(__ILEC400__)
 #  pragma pack(pop)

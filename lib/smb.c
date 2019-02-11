@@ -617,12 +617,8 @@ static CURLcode smb_send_rpcbind(struct connectdata *conn)
   return _smb_send_open(conn, "srvsvc");
 }
 
-#define MEMALIGN_UP(addr, align) \
-    ((((uintptr_t)(addr)) + ((align) - 1)) & ~((align) - 1))
-
-
 //XXX This is oldstyle LANMAN protocol RAP netshareenum, 
-static CURLcode smb_transact_one(struct connectdata *conn, unsigned short op, const char *pdesc, const char *ddesc)
+static CURLcode smb_send_enumshares(struct connectdata *conn)
 {
   union {
     char pbuf[1024];
@@ -655,9 +651,8 @@ static CURLcode smb_transact_one(struct connectdata *conn, unsigned short op, co
     unsigned short recvbufsize;
   })  *rap_req1 = NULL;
 
-#define LANMAN "\\PIPE\\LANMAN"
-  sprintf(smb_pipe_protocol->pipename, LANMAN);
-  smb_pipe_protocol->bytecount = sizeof(LANMAN);
+  sprintf(smb_pipe_protocol->pipename, MS_PIPE_LANMAN);
+  smb_pipe_protocol->bytecount = sizeof(MS_PIPE_LANMAN);
   /*Align the RAP request to 4b boundary*/
   rap_req1 = MEMALIGN_UP(smb_pipe_protocol->pipename + smb_pipe_protocol->bytecount, 4);
 #define MS_RAP_NETSHAREENUM 0x0000
@@ -677,15 +672,33 @@ static CURLcode smb_transact_one(struct connectdata *conn, unsigned short op, co
 
 }
 
-
-static CURLcode smb_send_enumshares(struct connectdata *conn) {
-  return smb_transact_one(conn, 0x00, "WrLeh", "B13BWz");
-}
-
-static CURLcode smb_recv_enumshares(void *msg, size_t len) {
+static CURLcode smb_recv_enumshares(struct connectdata *conn, void *msg, size_t len) {
+  CURLcode result = CURLE_OK;
   struct smb_header *h = msg;
-  struct smb_transact *t = h + 1;
+  struct smb_transact_rsp *t = h + 1;
+  unsigned short *bytecount = t->setup;
+  struct {
+    unsigned short status;
+    unsigned short convert;
+    unsigned short entries_returned;
+    unsigned short entries_available;
+    struct netshareinfo0{
+      char networkname[13];
+    } data;
+  } *rap_nse_rep = MEMALIGN_UP((char*)&t->setup[1], 4);
 
+  if (rap_nse_rep->status != 0x0000 ||
+    len < (sizeof(*h) + sizeof(*t) + sizeof(*rap_nse_rep)))
+    return CURLE_WEIRD_SERVER_REPLY;
+
+  struct netshareinfo0 *share = &rap_nse_rep->data;
+  for (int i = 0; i < rap_nse_rep->entries_returned; i++, share++) {
+    if (share >(char*)msg + len)
+      return CURLE_WEIRD_SERVER_REPLY;
+    if ((result = Curl_client_write(conn, CLIENTWRITE_BODY, share, strnlen(share, 13))) != CURLE_OK)
+      break;
+  }
+  return result;
 }
 
 static CURLcode smb_send_and_recv(struct connectdata *conn, void **msg)
@@ -966,7 +979,7 @@ static CURLcode smb_request_state(struct connectdata *conn, bool *done)
   case SMB_ENUMSHARES:
     /*TODO: we end up here when we receive the enumshares reply,
     parse the data*/
-    smb_recv_enumshares(msg, smbc->got);
+    smb_recv_enumshares(conn, msg, smbc->got);
     next_state = SMB_DONE;
     break;
 
