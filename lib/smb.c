@@ -620,20 +620,22 @@ static CURLcode smb_send_rpcbind(struct connectdata *conn)
 //XXX This is oldstyle LANMAN protocol RAP netshareenum, 
 static CURLcode smb_send_enumshares(struct connectdata *conn)
 {
+  /*NetShareEnum must be wrapped inside a transaction. As we won't
+   *do anything else than enumerate share info, the transaction header
+   *will be little more than a request wrapper*/
   union {
     char pbuf[1024];
     struct smb_transact t;
   } req = {
-    .t.word_count = 0x0E, //FIXME
-    .t.total_parameter_count = 0x0000, //FIXME
+    .t.word_count = 0x0E,
+    .t.total_parameter_count = 0x0000,
     .t.total_data_count = 0x0000,
     .t.max_parameter_count = 0x0000,
-    .t.max_data_count = 0x1000, //TODO: defined max
+    .t.max_data_count = 0x1000,
     .t.max_setup_count = 0x00,
     .t.flags = DISCONNECT_TID,
+    .t.max_parameter_count = sizeof(struct ms_rap_nse_rep),
     .t.timeout = 0x0,
-    .t.parameter_count = 0x00, //FIXME
-    .t.parameter_offset = 0x0, //FIXME
     .t.data_count = 0x0,
     .t.data_offset = 0x0
   };
@@ -655,16 +657,15 @@ static CURLcode smb_send_enumshares(struct connectdata *conn)
   smb_pipe_protocol->bytecount = sizeof(MS_PIPE_LANMAN);
   /*Align the RAP request to 4b boundary*/
   rap_req1 = MEMALIGN_UP(smb_pipe_protocol->pipename + smb_pipe_protocol->bytecount, 4);
-#define MS_RAP_NETSHAREENUM 0x0000
   rap_req1->opcode = MS_RAP_NETSHAREENUM;
   sprintf(rap_req1->paramdesc, "WrLeh");
   sprintf(rap_req1->datadesc, "B13BWz");
   rap_req1->infolevel = 1;
   rap_req1->recvbufsize = 0x1000;
 
-  req.t.max_parameter_count = sizeof(*rap_req1);// 0x8;
   req.t.total_parameter_count = sizeof(*rap_req1);
   req.t.parameter_count = sizeof(*rap_req1);
+  /*Offset by an additional 4b since server component is not part of smb_header struct*/
   req.t.parameter_offset = (char*)rap_req1 - (char*)&req +sizeof(struct smb_header) - 4;
   smb_pipe_protocol->bytecount = (char*)(rap_req1 + 1) - (char*)&req;
 
@@ -677,23 +678,17 @@ static CURLcode smb_recv_enumshares(struct connectdata *conn, void *msg, size_t 
   struct smb_header *h = msg;
   struct smb_transact_rsp *t = h + 1;
   unsigned short *bytecount = t->setup;
-  struct {
-    unsigned short status;
-    unsigned short convert;
-    unsigned short entries_returned;
-    unsigned short entries_available;
-    struct netshareinfo0{
-      char networkname[13];
-    } data;
-  } *rap_nse_rep = MEMALIGN_UP((char*)&t->setup[1], 4);
+  struct ms_rap_nse_rep *rap_nse_rep = MEMALIGN_UP((char*)&t->setup[1], 4);
+  struct netshareinfo0 *share = (struct netshareinfo0*)&rap_nse_rep->data;
 
+  if (h->status)
+    return CURLE_RECV_ERROR;
   if (rap_nse_rep->status != 0x0000 ||
     len < (sizeof(*h) + sizeof(*t) + sizeof(*rap_nse_rep)))
     return CURLE_WEIRD_SERVER_REPLY;
 
-  struct netshareinfo0 *share = &rap_nse_rep->data;
   for (int i = 0; i < rap_nse_rep->entries_returned; i++, share++) {
-    if (share >(char*)msg + len)
+    if (share > (char*)msg + len)
       return CURLE_WEIRD_SERVER_REPLY;
     if ((result = Curl_client_write(conn, CLIENTWRITE_BODY, share, strnlen(share, 13))) != CURLE_OK)
       break;

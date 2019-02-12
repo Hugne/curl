@@ -56,6 +56,7 @@ struct smb_conn {
     ((((uintptr_t)(addr)) + ((align) - 1)) & ~((align) - 1))
 
 #define MS_PIPE_LANMAN "\\PIPE\\LANMAN"
+#define MS_RAP_NETSHAREENUM 0x0000
 
 #if defined(_MSC_VER) || defined(__ILEC400__)
 #define PACKED(s)  __pragma(pack(push,1)) s __pragma(pack(pop)) 
@@ -284,6 +285,18 @@ struct smb_transact_rsp {
   unsigned char setup_count;
   unsigned char reserved2;
   unsigned short setup[];
+};
+
+struct netshareinfo0 {
+  char networkname[13];
+};
+
+struct ms_rap_nse_rep {
+  unsigned short status;
+  unsigned short convert;
+  unsigned short entries_returned;
+  unsigned short entries_available;
+  unsigned char data[];
 };
 
 #if defined(_MSC_VER) || defined(__ILEC400__)
